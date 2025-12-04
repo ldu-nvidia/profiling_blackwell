@@ -3,12 +3,286 @@
 This project profiles the performance of Vision Transformer (ViT) models across different precision formats (FP16, MXFP8, NVFP4) using NVIDIA's TensorRT optimization and Nsight profiling tools.
 
 ## Table of Contents
+- [Quick Start Guide](#quick-start-guide)
 - [Overview](#overview)
 - [TensorRT Deep Dive](#tensorrt-deep-dive)
 - [What is a TensorRT Engine?](#what-is-a-tensorrt-engine)
 - [Project Structure](#project-structure)
 - [Usage](#usage)
+- [Profiling Your Own Models](#profiling-your-own-models)
 - [Results](#results)
+
+---
+
+## Quick Start Guide
+
+**Complete step-by-step walkthrough for replicating this profiling setup on a Blackwell GPU.**
+
+### Prerequisites
+
+| Requirement | Minimum | Recommended |
+|-------------|---------|-------------|
+| **GPU** | NVIDIA Blackwell (RTX 5000 series, RTX PRO 6000) | RTX PRO 6000 |
+| **Driver** | 550+ | 580+ |
+| **OS** | Ubuntu 22.04 / 24.04 | Ubuntu 24.04 |
+| **Docker** | 24.0+ | Latest |
+| **Disk Space** | 50 GB | 100 GB |
+| **RAM** | 32 GB | 64 GB |
+
+### Step 1: Verify GPU and Driver
+
+```bash
+# Check GPU is detected
+nvidia-smi
+
+# Expected output should show Blackwell GPU:
+# NVIDIA RTX PRO 6000 Blackwell Workstation Edition
+# Driver Version: 580.xx.xx   CUDA Version: 13.x
+
+# Verify compute capability (Blackwell = SM 12.0)
+nvidia-smi --query-gpu=compute_cap --format=csv
+```
+
+### Step 2: Install Docker with NVIDIA Container Toolkit
+
+```bash
+# Install Docker (if not already installed)
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+sudo usermod -aG docker $USER
+newgrp docker
+
+# Install NVIDIA Container Toolkit
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+  sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+  sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+sudo apt-get update
+sudo apt-get install -y nvidia-container-toolkit
+
+# Configure Docker to use NVIDIA runtime
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+
+# Verify Docker can access GPU
+docker run --rm --gpus all nvidia/cuda:12.6.0-base-ubuntu24.04 nvidia-smi
+```
+
+### Step 3: Clone This Repository
+
+```bash
+cd ~/repos  # or your preferred directory
+git clone <repository-url> profiling_blackwell
+cd profiling_blackwell
+```
+
+### Step 4: Pull the Container Image
+
+```bash
+# Pull the NVIDIA PyTorch container (includes TensorRT, Nsight tools)
+# This is ~15 GB, may take 10-20 minutes
+docker pull nvcr.io/nvidia/pytorch:25.06-py3
+
+# Verify the container works
+docker run --rm --gpus all nvcr.io/nvidia/pytorch:25.06-py3 \
+  bash -c "python3 -c 'import tensorrt; print(f\"TensorRT: {tensorrt.__version__}\")'"
+```
+
+### Step 5: Prepare Your ONNX Models
+
+Place your ONNX models in the `models/` directory:
+
+```bash
+# Create models directory if it doesn't exist
+mkdir -p models
+
+# Copy your models (example)
+cp /path/to/your/model_fp16.onnx models/
+cp /path/to/your/model_nvfp4.onnx models/
+
+# Verify models are in place
+ls -lh models/
+```
+
+**Model naming convention** (update `scripts/run_profiling.sh` if different):
+```
+models/
+├── vit_fp16_bs_064.onnx    # FP16 baseline
+├── vit_mxfp8_bs_064.onnx   # MXFP8 (optional - requires plugin)
+└── vit_nvfp4_bs_064.onnx   # NVFP4 quantized
+```
+
+### Step 6: Configure the Profiling Script
+
+Edit `scripts/run_profiling.sh` to match your models:
+
+```bash
+# Open the script
+nano scripts/run_profiling.sh
+
+# Find and update the MODELS array (around line 50):
+declare -a MODELS=(
+    "your_model_fp16.onnx:fp16"
+    "your_model_nvfp4.onnx:nvfp4"
+)
+
+# Optionally adjust parameters:
+WARMUP=50           # Warmup iterations
+ITERATIONS=100      # Benchmark iterations
+CONTAINER_IMAGE="nvcr.io/nvidia/pytorch:25.06-py3"
+```
+
+### Step 7: Run the Profiling
+
+```bash
+# Make scripts executable
+chmod +x scripts/*.sh
+
+# Option A: Quick benchmark only (fastest, ~5 min)
+./scripts/run_profiling.sh --benchmark
+
+# Option B: Full profiling with Nsight Systems (~15 min)
+./scripts/run_profiling.sh --nsys
+
+# Option C: Complete profiling (nsys + ncu + benchmark, ~30 min)
+./scripts/run_profiling.sh
+```
+
+**Expected output:**
+```
+[2025-12-04 10:30:00] ================================================================================
+[2025-12-04 10:30:00] TENSORRT PROFILING - FP16 / NVFP4
+[2025-12-04 10:30:00] ================================================================================
+[2025-12-04 10:30:00] >>> Checking environment...
+[2025-12-04 10:30:00] GPU: NVIDIA RTX PRO 6000 Blackwell Workstation Edition
+[2025-12-04 10:30:00] Docker: 29.x.x
+[2025-12-04 10:30:00] Container: nvcr.io/nvidia/pytorch:25.06-py3
+...
+[2025-12-04 10:35:00] >>> Benchmarking: fp16
+[2025-12-04 10:35:05]     Mean Latency:   10.4 ms
+[2025-12-04 10:35:05]     Throughput:     95.8 qps
+...
+```
+
+### Step 8: View Results
+
+```bash
+# View the summary report
+cat results/runs/*/REPORT.txt
+
+# List all generated files
+find results/runs -type f
+
+# Results structure:
+results/runs/YYYYMMDD_HHMMSS/
+├── REPORT.txt              # Summary comparison
+├── benchmark/
+│   ├── fp16.json           # FP16 metrics
+│   └── nvfp4.json          # NVFP4 metrics
+├── nsight-systems/
+│   ├── fp16/
+│   │   └── profile.nsys-rep  # Open in Nsight Systems GUI
+│   └── nvfp4/
+│       └── profile.nsys-rep
+└── nsight-compute/
+    └── ...
+```
+
+### Step 9: Analyze Kernel-Level Performance
+
+```bash
+# Generate kernel summary from Nsight Systems profile
+docker run --rm --gpus all \
+  -v $(pwd):/workspace \
+  nvcr.io/nvidia/pytorch:25.06-py3 \
+  nsys stats --force-export=true \
+  /workspace/results/runs/*/nsight-systems/fp16/profile.nsys-rep
+
+# Compare FP16 vs NVFP4 kernel breakdown
+docker run --rm --gpus all \
+  -v $(pwd):/workspace \
+  nvcr.io/nvidia/pytorch:25.06-py3 \
+  bash -c "
+    echo '=== FP16 Top Kernels ===' && \
+    nsys stats --force-export=true /workspace/results/runs/*/nsight-systems/fp16/profile.nsys-rep 2>&1 | \
+    grep -A 20 'CUDA GPU Kernel Summary' && \
+    echo '' && \
+    echo '=== NVFP4 Top Kernels ===' && \
+    nsys stats --force-export=true /workspace/results/runs/*/nsight-systems/nvfp4/profile.nsys-rep 2>&1 | \
+    grep -A 20 'CUDA GPU Kernel Summary'
+  "
+```
+
+### Step 10: View in Nsight Systems GUI (Optional)
+
+To visualize the timeline on a machine with a display:
+
+```bash
+# Option A: Copy .nsys-rep files to a machine with Nsight Systems GUI
+scp results/runs/*/nsight-systems/*/*.nsys-rep user@workstation:/path/to/view/
+
+# Option B: Install Nsight Systems locally
+# Download from: https://developer.nvidia.com/nsight-systems
+# Then open: nsys-ui results/runs/*/nsight-systems/fp16/profile.nsys-rep
+```
+
+---
+
+### Troubleshooting
+
+<details>
+<summary><b>Docker: "permission denied" error</b></summary>
+
+```bash
+sudo usermod -aG docker $USER
+newgrp docker
+# Or logout and login again
+```
+</details>
+
+<details>
+<summary><b>Container: "NVIDIA driver not detected"</b></summary>
+
+```bash
+# Reinstall NVIDIA Container Toolkit
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+
+# Test
+docker run --rm --gpus all nvidia/cuda:12.6.0-base-ubuntu24.04 nvidia-smi
+```
+</details>
+
+<details>
+<summary><b>Engine build fails for MXFP8</b></summary>
+
+MXFP8 models require the `TRT_MXFP8DequantizeLinear` plugin which is not included in standard containers. Either:
+1. Skip MXFP8 (comment out in `run_profiling.sh`)
+2. Use a container with ModelOpt TRT plugins built-in
+</details>
+
+<details>
+<summary><b>Nsight Compute requires --privileged</b></summary>
+
+The profiling script already includes `--privileged` for NCU. If you still get permission errors:
+
+```bash
+# Run container with extended privileges
+docker run --rm --gpus all --privileged --cap-add=SYS_ADMIN ...
+```
+</details>
+
+<details>
+<summary><b>Out of GPU memory</b></summary>
+
+Reduce batch size in your ONNX model or adjust the profiling parameters:
+
+```bash
+# In run_profiling.sh, reduce iterations
+WARMUP=10
+ITERATIONS=50
+```
+</details>
 
 ---
 
@@ -508,6 +782,103 @@ cat results/nsight-systems/COMPARISON_REPORT_*.txt
 # Open Nsight Systems GUI (on local machine with GUI)
 nsys-ui results/nsight-systems/vit_fp16_trt_*/profile.nsys-rep
 ```
+
+---
+
+## Profiling Your Own Models
+
+### Exporting Your Model to ONNX
+
+If you have a PyTorch model, export it to ONNX:
+
+```python
+import torch
+import torch.onnx
+
+# Load your model
+model = YourModel()
+model.eval()
+
+# Create dummy input matching your model's expected input
+batch_size = 64
+dummy_input = torch.randn(batch_size, 3, 224, 224)
+
+# Export to ONNX
+torch.onnx.export(
+    model,
+    dummy_input,
+    "models/your_model_fp16.onnx",
+    export_params=True,
+    opset_version=17,
+    do_constant_folding=True,
+    input_names=['input'],
+    output_names=['output'],
+    dynamic_axes={
+        'input': {0: 'batch_size'},
+        'output': {0: 'batch_size'}
+    }
+)
+```
+
+### Quantizing to NVFP4
+
+Use NVIDIA ModelOpt to quantize your ONNX model:
+
+```python
+# Inside the container or with modelopt installed
+import modelopt.onnx.quantization as moq
+
+# Quantize to NVFP4
+moq.quantize(
+    onnx_path="models/your_model_fp16.onnx",
+    output_path="models/your_model_nvfp4.onnx",
+    quantize_mode="nvfp4_awq_clip",
+)
+```
+
+Or use the container:
+
+```bash
+docker run --rm --gpus all \
+  -v $(pwd):/workspace \
+  nvcr.io/nvidia/pytorch:25.06-py3 \
+  python3 -c "
+import modelopt.onnx.quantization as moq
+moq.quantize(
+    '/workspace/models/your_model_fp16.onnx',
+    '/workspace/models/your_model_nvfp4.onnx',
+    quantize_mode='nvfp4_awq_clip'
+)
+"
+```
+
+### Updating the Profiling Script
+
+1. **Edit model list** in `scripts/run_profiling.sh`:
+
+```bash
+declare -a MODELS=(
+    "your_model_fp16.onnx:fp16"
+    "your_model_nvfp4.onnx:nvfp4"
+)
+```
+
+2. **Adjust input shapes** if needed (in trtexec commands):
+
+```bash
+# For dynamic shapes, add to trtexec:
+--minShapes=input:1x3x224x224 \
+--optShapes=input:64x3x224x224 \
+--maxShapes=input:128x3x224x224
+```
+
+### Expected Results by Model Size
+
+| Model Size | FP16 Engine | NVFP4 Engine | Build Time |
+|------------|-------------|--------------|------------|
+| ~100M params | ~400 MB | ~150 MB | ~2 min |
+| ~300M params | ~1.2 GB | ~400 MB | ~5 min |
+| ~1B params | ~4 GB | ~1.5 GB | ~15 min |
 
 ---
 
