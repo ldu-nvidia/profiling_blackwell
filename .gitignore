@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+profiling_env/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# TensorRT engines (large binary files)
+engines/*.engine
+engines/*_build.log
+
+# Nsight profiling outputs (large files)
+results/runs/*/nsight-systems/*.nsys-rep
+results/runs/*/nsight-systems/*.sqlite
+results/runs/*/nsight-compute/*.ncu-rep
+results/archive/
+
+# Logs
+logs/*.log
+
+# Models (large ONNX files - track with Git LFS or exclude)
+models/*.onnx
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+

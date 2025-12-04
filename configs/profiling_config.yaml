@@ -1,0 +1,111 @@
+# =============================================================================
+# TensorRT Profiling Configuration
+# =============================================================================
+# Centralized configuration for all profiling scripts
+# Machine: Blackwell Workstation (RTX PRO 6000 x2)
+# =============================================================================
+
+# Container configuration
+container:
+  # PyTorch container includes TensorRT, Nsight tools, and ModelOpt
+  image: "nvcr.io/nvidia/pytorch:25.06-py3"
+  
+  # Docker run options
+  options:
+    gpus: "all"
+    ipc: "host"
+    ulimit_memlock: -1
+    ulimit_stack: 67108864
+  
+  # Mount point inside container
+  workspace: "/workspace/profiling"
+
+# Project paths (relative to project root)
+paths:
+  models: "models"
+  scripts: "scripts"
+  src: "src"
+  results: "results"
+  engines: "engines"
+  logs: "logs"
+  tools: "tools"
+  configs: "configs"
+
+# Models to profile
+models:
+  - name: "fp16"
+    file: "vit_fp16_bs_064.onnx"
+    precision: "fp16"
+    description: "FP16 half-precision baseline"
+    build_flags: "--fp16"
+    
+  - name: "mxfp8"
+    file: "vit_mxfp8_bs_064.onnx"
+    precision: "mxfp8"
+    description: "Microscaling FP8 format (requires ModelOpt plugin)"
+    build_flags: "--fp16 --stronglyTyped"
+    requires_modelopt: true
+    
+  - name: "nvfp4"
+    file: "vit_nvfp4_bs_064.onnx"
+    precision: "nvfp4"
+    description: "NVIDIA 4-bit floating point"
+    build_flags: "--fp16 --stronglyTyped"
+
+# Profiling configuration
+profiling:
+  warmup_iterations: 50
+  benchmark_iterations: 100
+
+# Nsight Systems configuration
+nsight_systems:
+  trace:
+    - cuda
+    - nvtx
+    - osrt
+  cuda_memory_usage: true
+  stats: true
+  output_format: "nsys-rep"
+
+# Nsight Compute configuration  
+nsight_compute:
+  set: "full"           # Metric set: basic, roofline, full
+  launch_skip: 10       # Skip first N kernel launches (warmup)
+  launch_count: 5       # Profile N kernel launches
+  output_format: "ncu-rep"
+  
+  # Key metrics to capture
+  sections:
+    - "SpeedOfLight"
+    - "MemoryWorkloadAnalysis"
+    - "ComputeWorkloadAnalysis"
+    - "Occupancy"
+    - "LaunchStatistics"
+
+# TensorRT configuration
+tensorrt:
+  max_workspace_size: 4294967296  # 4GB
+  use_cuda_graph: true
+  no_data_transfers: true  # Exclude HtoD/DtoH from timing
+
+# GPU configuration (Blackwell RTX PRO 6000)
+gpu:
+  architecture: "blackwell"
+  expected_features:
+    - "Native MXFP8 support"
+    - "Native NVFP4 support"
+    - "4th gen Tensor Cores"
+    - "98GB HBM memory"
+
+# Expected performance (for validation on Blackwell)
+expected_performance:
+  fp16:
+    latency_ms_max: 10
+    throughput_min: 6000
+  mxfp8:
+    speedup_vs_fp16_min: 2.0
+    description: "~2-3x faster with native E4M3/E5M2 support"
+  nvfp4:
+    speedup_vs_fp16_min: 3.0
+    description: "~3-4x faster with native FP4 Tensor Cores"
+
