@@ -55,8 +55,11 @@ results/archive/
 logs/*.log
 
 # Models (large ONNX files - track with Git LFS or exclude)
+*.tar.gz
+*.onnx
 models/*.onnx
-
+results/*
+docs/
 # Temporary files
 *.tmp
 *.temp
