@@ -124,26 +124,84 @@ docker run --rm --gpus all -v $(pwd):/workspace CONTAINER \
 
 ---
 
+## 2:4 Structured Sparsity Results
+
+### FP16: Dense vs Sparse Comparison (Batch Size 64)
+
+| Metric | FP16 Dense | FP16 + 2:4 Sparsity | Improvement |
+|--------|------------|---------------------|-------------|
+| **GPU Compute Time** | 8.51 ms | 6.84 ms | **19.6% faster** |
+| **Throughput** | 117.2 qps | 145.8 qps | **+24.4%** |
+| **Latency (mean)** | 9.22 ms | 7.54 ms | **18.2% lower** |
+| **Engine Size** | 174 MB | 128 MB | **26% smaller** |
+
+### Why Not 2x Speedup?
+
+2:4 sparsity theoretically provides 2x compute throughput, but real-world speedup is ~1.2-1.25x because:
+
+1. **Not all layers are sparsified** - Only Linear/Conv2d layers (60-70% of compute) benefit; LayerNorm, Softmax, GELU remain dense
+2. **Memory bandwidth unchanged** - Many ops are memory-bound, not compute-bound
+3. **Activations remain dense** - Only weights are sparse; input activations are still full density
+4. **Sparse tensor core overhead** - Small cost for decoding sparsity patterns
+
+### Build Sparse FP16 Engine
+
+```bash
+# Step 1: Generate sparse ONNX model (requires ModelOpt)
+docker run --rm --gpus all -v $(pwd):/workspace nvcr.io/nvidia/pytorch:25.06-py3 \
+    bash -c "pip install timm nvidia-modelopt[all] && python /workspace/scripts/sparsify_vit.py"
+
+# Step 2: Build TensorRT engine with sparsity enabled
+docker run --rm --gpus all -v $(pwd):/workspace nvcr.io/nvidia/tensorrt:25.11-py3 \
+    trtexec --onnx=/workspace/models/sparse/vit_sparse_fp16_bs064.onnx \
+            --saveEngine=/workspace/engines/sparse/vit_fp16_sparse.engine \
+            --fp16 --sparsity=enable
+```
+
+**Key Flags:**
+- `--sparsity=enable`: Tells TensorRT to use sparse tensor cores for layers with 2:4 sparsity pattern
+
+### ⚠️ Known Issue: Sparsity + Quantization (MXFP8/NVFP4)
+
+Combining 2:4 sparsity with linear layer quantization (MXFP8 or NVFP4) currently fails during ONNX export:
+
+```
+torch.onnx.errors.SymbolicValueError: Unsupported: ONNX export of convolution 
+for kernel of unknown shape. [Caused by 'trt::TRT_MXFP8DequantizeLinear']
+```
+
+**Root Cause:** ModelOpt's quantization ops (`trt::TRT_MXFP8DequantizeLinear`, `trt::TRT_NVFP4DequantizeLinear`) are TensorRT-specific custom ops that PyTorch's ONNX exporter cannot serialize properly.
+
+**Status:** 🔄 Investigating alternative export paths (direct TensorRT compilation, different ModelOpt export APIs).
+
+**Workaround:** For now, use sparsity OR quantization separately:
+- FP16 + Sparsity: ✅ Working (19.6% speedup)
+- MXFP8/NVFP4 (no sparsity): ✅ Working (26-60% speedup)
+- MXFP8/NVFP4 + Sparsity: ❌ Export issue
+
+---
+
 ## Future Optimization
 
 ### Top 4 Optimization Opportunities
 
 | Rank | Optimization | Potential Speedup | Architecture Change Required | Effort |
 |------|--------------|-------------------|------------------------------|--------|
-| **1** | **2:4 Structured Sparsity** | +50-100% | ✅ Yes - Requires retraining with sparsity-aware fine-tuning using ModelOpt | High |
+| **1** | **2:4 Structured Sparsity** | ~20-25% ✅ Verified | ✅ Yes - Requires sparsification using ModelOpt (SparseGPT or magnitude pruning) | High |
 | **2** | **Attention Quantization** | +20-40% | ✅ Yes - Sequence length must be divisible by 32 (MXFP8) or 16 (NVFP4); attention tensors must be 3D | High |
 | **3** | **Flash Attention** | +20-30% | ✅ Yes - Must use `scaled_dot_product_attention` or compatible implementation for TRT fusion | Medium |
 | **4** | **Increase Batch Size** | +10-20% | ❌ No - Can apply directly to existing ONNX with dynamic shapes | Low |
 
 ### Combined Potential Speedup
 
-| Configuration | Cumulative Speedup |
-|---------------|-------------------|
-| Current (NVFP4 linear only) | **1.60x** |
-| + Batch size increase | ~1.80x |
-| + Flash Attention | ~2.20x |
-| + Attention Quantization | ~2.80x |
-| + 2:4 Sparsity | **~3.50-4.00x** |
+| Configuration | Cumulative Speedup | Status |
+|---------------|-------------------|--------|
+| FP16 Baseline | 1.00x | ✅ Measured |
+| + 2:4 Sparsity | **1.24x** | ✅ Measured |
+| + NVFP4 Quantization | ~1.60x | ✅ Measured (no sparsity) |
+| + Flash Attention | ~2.00x | 🔄 Estimated |
+| + Attention Quantization | ~2.50x | 🔄 Estimated |
+| **Combined (Sparsity + NVFP4 + Attn Quant)** | **~2.50-3.00x** | 🎯 Target |
 
 ---
 
